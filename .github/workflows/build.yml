@@ -1,0 +1,389 @@
+name: Build LumberBot APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+      - name: Generate project files
+        run: |
+          mkdir -p /tmp/proj
+          cd /tmp/proj
+          cat > settings.gradle <<'EOF_27303'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "LumberBot"
+          include ':app'
+          EOF_27303
+          cat > build.gradle <<'EOF_80946'
+          plugins {
+              id 'com.android.application' version '8.3.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.23' apply false
+          }
+          EOF_80946
+          cat > gradle.properties <<'EOF_54182'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF_54182
+          mkdir -p app
+          cat > app/build.gradle <<'EOF_41848'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+          android {
+              namespace 'com.hero.lumberbot'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.hero.lumberbot'
+                  minSdk 30
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = '17' }
+          }
+          EOF_41848
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF_97465'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:label="LumberBot"
+                  android:theme="@android:style/Theme.Material.Light">
+
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".BotService"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaProjection" />
+
+                  <service
+                      android:name=".TapService"
+                      android:exported="true"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+                        </manifest>
+          EOF_97465
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'EOF_94943'
+          <resources>
+              <string name="acc_desc">Lets LumberBot tap the screen for you.</string>
+          </resources>
+          EOF_94943
+          mkdir -p app/src/main/res/xml
+          cat > app/src/main/res/xml/accessibility_config.xml <<'EOF_29796'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canPerformGestures="true"
+              android:description="@string/acc_desc" />
+          EOF_29796
+          mkdir -p app/src/main/java/com/hero/lumberbot
+          cat > app/src/main/java/com/hero/lumberbot/TapService.kt <<'EOF_48804'
+          package com.hero.lumberbot
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Intent
+          import android.graphics.Path
+          import android.view.accessibility.AccessibilityEvent
+
+          class TapService : AccessibilityService() {
+              companion object {
+                  @Volatile var instance: TapService? = null
+              }
+
+              override fun onServiceConnected() { instance = this }
+              override fun onUnbind(intent: Intent?): Boolean { instance = null; return super.onUnbind(intent) }
+              override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+              override fun onInterrupt() {}
+
+              fun tap(x: Float, y: Float) {
+                  val p = Path().apply { moveTo(x, y) }
+                  val g = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(p, 0, 25))
+                      .build()
+                  dispatchGesture(g, null, null)
+              }
+          }
+          EOF_48804
+          mkdir -p app/src/main/java/com/hero/lumberbot
+          cat > app/src/main/java/com/hero/lumberbot/MainActivity.kt <<'EOF_24413'
+          package com.hero.lumberbot
+
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.media.projection.MediaProjectionManager
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.widget.Toast
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                  }
+                  val l = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 96, 48, 48)
+                  }
+                  l.addView(TextView(this).apply {
+                      text = "LumberBot\nDo steps 1-3, then open the game and tap the green bubble."
+                      textSize = 16f
+                  })
+                  fun btn(t: String, a: () -> Unit) {
+                      l.addView(Button(this).apply { text = t; setOnClickListener { a() } })
+                  }
+                  btn("1. Allow draw over other apps") {
+                      startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                  }
+                  btn("2. Enable accessibility service (LumberBot)") {
+                      startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                  }
+                  btn("3. Start floating bot") {
+                      if (!Settings.canDrawOverlays(this)) {
+                          Toast.makeText(this, "Do step 1 first", Toast.LENGTH_SHORT).show()
+                      } else if (TapService.instance == null) {
+                          Toast.makeText(this, "Do step 2 first", Toast.LENGTH_SHORT).show()
+                      } else {
+                          val m = getSystemService(MediaProjectionManager::class.java)
+                          startActivityForResult(m.createScreenCaptureIntent(), 100)
+                      }
+                  }
+                  setContentView(l)
+              }
+              
+              @Deprecated("Deprecated in Java")
+              override fun onActivityResult(req: Int, res: Int, data: Intent?) {
+                  super.onActivityResult(req, res, data)
+                  if (req == 100 && res == RESULT_OK && data != null) {
+                      startForegroundService(
+                          Intent(this, BotService::class.java).putExtra("code", res).putExtra("data", data)
+                      )
+                      moveTaskToBack(true)
+                  }
+              }
+          }
+          EOF_24413
+          mkdir -p app/src/main/java/com/hero/lumberbot
+          cat > app/src/main/java/com/hero/lumberbot/BotService.kt <<'EOF_31403'
+          package com.hero.lumberbot
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.drawable.GradientDrawable
+          import android.hardware.display.DisplayManager
+          import android.media.ImageReader
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.view.Gravity
+          import android.view.WindowManager
+          import android.widget.TextView
+          import java.nio.ByteBuffer
+
+          class BotService : Service() {
+
+              // ---- Tuning (change these if it misses taps or dies) ----
+              private val LOOKAHEAD = 4      // how many chops to plan per screenshot (1-4)
+              private val TAP_GAP = 85L      // ms between taps in a burst (raise if game drops taps)
+              private val SETTLE = 140L      // ms to wait after a burst before re-reading screen
+              private val GREEN_MIN = 25     // green pixels needed to call a branch
+
+              private var projection: MediaProjection? = null
+              private var reader: ImageReader? = null
+              private var wm: WindowManager? = null
+              private var bubble: TextView? = null
+              @Volatile private var running = false
+              @Volatile private var alive = true
+              private var W = 0
+              private var H = 0
+              private var started = false
+
+              override fun onBind(i: Intent?): IBinder? = null
+
+              @Suppress("DEPRECATION")
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(NotificationChannel("bot", "LumberBot", NotificationManager.IMPORTANCE_LOW))
+                  val n = Notification.Builder(this, "bot")
+                      .setContentTitle("LumberBot is ready")
+                      .setSmallIcon(android.R.drawable.ic_media_play).build()
+                  startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+
+                  val data = intent?.getParcelableExtra<Intent>("data")
+                  if (data == null || started) { if (!started) stopSelf(); return START_NOT_STICKY }
+                  started = true
+
+                  val mpm = getSystemService(MediaProjectionManager::class.java)
+                  val proj = mpm.getMediaProjection(intent.getIntExtra("code", 0), data)
+                  projection = proj
+                  proj.registerCallback(object : MediaProjection.Callback() {
+                      override fun onStop() { stopSelf() }
+                  }, Handler(Looper.getMainLooper()))
+
+                  wm = getSystemService(WindowManager::class.java)
+                  val b = wm!!.maximumWindowMetrics.bounds
+                  W = b.width(); H = b.height()
+                  reader = ImageReader.newInstance(W, H, PixelFormat.RGBA_8888, 2)
+                  proj.createVirtualDisplay(
+                      "lumberbot", W, H, resources.displayMetrics.densityDpi,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null
+                  )
+                  addBubble()
+                  Thread { loop() }.start()
+                  return START_NOT_STICKY
+              }
+
+              private fun addBubble() {
+                  val d = resources.displayMetrics.density
+                  val s = (52 * d).toInt()
+                  val tv = TextView(this).apply {
+                      text = "▶"; setTextColor(Color.WHITE); textSize = 20f; gravity = Gravity.CENTER
+                      background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xCC2E7D32.toInt()) }
+                      setOnClickListener {
+                                                running = !running
+                          text = if (running) "■" else "▶"
+                          (background as GradientDrawable).setColor(if (running) 0xCCC62828.toInt() else 0xCC2E7D32.toInt())
+                      }
+                  }
+                  val lp = WindowManager.LayoutParams(
+                      s, s, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT
+                  ).apply { gravity = Gravity.TOP or Gravity.START; x = 0; y = (H * 0.62).toInt() }
+                  wm!!.addView(tv, lp)
+                  bubble = tv
+              }
+
+              private fun loop() {
+                  val tapY = H * 0.824f
+                  while (alive) {
+                      if (!running) { Thread.sleep(100); continue }
+                      val img = reader?.acquireLatestImage()
+                      if (img == null) { Thread.sleep(10); continue }
+                      var plan: List<Int>? = null
+                      try {
+                          val pl = img.planes[0]
+                          plan = analyze(pl.buffer, pl.rowStride)
+                      } catch (_: Exception) {
+                      } finally { img.close() }
+                      if (plan == null) { Thread.sleep(60); continue }
+                      for (side in plan) {
+                          TapService.instance?.tap(if (side < 0) W * 0.30f else W * 0.70f, tapY)
+                          Thread.sleep(TAP_GAP)
+                      }
+                      Thread.sleep(SETTLE)
+                  }
+              }
+
+              // Returns list of sides (-1 left, +1 right) for the next chops, or null if no game running.
+              private fun analyze(b: ByteBuffer, rs: Int): List<Int>? {
+                  // Is the tree trunk on screen?
+                  val ty = (H * 0.30).toInt()
+                  val trunk = count(b, rs, (W * 0.46).toInt(), (W * 0.54).toInt(), ty, ty + 3, ::isBrown)
+                  if (trunk < 6) return null
+
+                  // Which side is the lumberjack on? (red shirt)
+                  val y0 = (H * 0.54).toInt(); val y1 = (H * 0.60).toInt()
+                  val lr = count(b, rs, (W * 0.30).toInt(), (W * 0.42).toInt(), y0, y1, ::isRed)
+                  val rr = count(b, rs, (W * 0.58).toInt(), (W * 0.72).toInt(), y0, y1, ::isRed)
+                  if (lr < 15 && rr < 15) return null
+                  var cur = if (lr > rr) -1 else 1
+
+                  val out = ArrayList<Int>()
+                  for (k in 1..LOOKAHEAD) {
+                      val cy = ((0.478 - (k - 1) * 0.1086) * H).toInt()
+                      val l = count(b, rs, (W * 0.20).toInt(), (W * 0.38).toInt(), cy - 20, cy + 20, ::isGreen)
+                      val r = count(b, rs, (W * 0.62).toInt(), (W * 0.80).toInt(), cy - 20, cy + 20, ::isGreen)
+                      val branch = if (l > GREEN_MIN && l >= r) -1 else if (r > GREEN_MIN) 1 else 0
+                      if (branch != 0) cur = -branch   // go to the opposite side of the branch
+                      out.add(cur)
+                  }
+                  return out
+              }
+
+              private fun count(b: ByteBuffer, rs: Int, x0: Int, x1: Int, y0: Int, y1: Int, f: (Int, Int, Int) -> Boolean): Int {
+                  var c = 0
+                  var y = y0.coerceAtLeast(0)
+                  while (y < y1.coerceAtMost(H - 1)) {
+                      var x = x0
+                      while (x < x1.coerceAtMost(W - 1)) {
+                          val o = y * rs + x * 4
+                          if (f(b.get(o).toInt() and 255, b.get(o + 1).toInt() and 255, b.get(o + 2).toInt() and 255)) c++
+                          x += 3
+                      }
+                      y += 3
+                  }
+                  return c
+              }
+
+              private fun isGreen(r: Int, g: Int, b: Int) = g > 150 && g > r + 15 && g > b + 45
+              private fun isRed(r: Int, g: Int, b: Int) = r > 170 && g < 100 && b < 100
+              private fun isBrown(r: Int, g: Int, b: Int) = r > 110 && r > g + 20 && g > b + 15
+
+              override fun onDestroy() {
+                  alive = false
+                  try { bubble?.let { wm?.removeView(it) } } catch (_: Exception) {}
+                  projection?.stop()
+                  super.onDestroy()
+              }
+          }
+          EOF_31403
+      - name: Build
+        run: cd /tmp/proj && gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LumberBot-apk
+          path: /tmp/proj/app/build/outputs/apk/debug/app-debug.apk
+          
